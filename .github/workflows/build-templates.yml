@@ -79,14 +79,11 @@ jobs:
   build:
     name: Build — ${{ matrix.config_file }}
     needs: discover
-    runs-on: ${{ fromJson('{"windows":"windows-latest","linuxbsd":"ubuntu-latest"}')[fromJson(steps.read-config.outputs.platform || '"linuxbsd"')] }}
+    # All builds run on Ubuntu — Windows templates are cross-compiled with MinGW.
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
-
-    # We need the runner OS before we know the platform, so we run on ubuntu
-    # and cross-compile. Windows templates can be built on Linux with mingw.
-    runs-on: ubuntu-latest
 
     steps:
       # ── Checkout ──────────────────────────────────────────────────
@@ -290,9 +287,6 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-  # ─────────────────────────────────────────────────────────────────
-  # Job 3: Optional — create a GitHub Release on tags
-  # ─────────────────────────────────────────────────────────────────
   release:
     name: Create GitHub Release
     needs: build
