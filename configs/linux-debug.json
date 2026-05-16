@@ -1,0 +1,7 @@
+{
+  "godot_version": "4.6-stable",
+  "template_name": "linux-debug",
+  "target": "template_debug",
+  "output_dir": "dist/linux",
+  "platform": "linuxbsd"
+}

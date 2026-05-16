@@ -1,0 +1,326 @@
+name: Build Godot Export Templates
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'configs/**.json'
+      - '.github/workflows/build-templates.yml'
+  pull_request:
+    paths:
+      - 'configs/**.json'
+  workflow_dispatch:
+    inputs:
+      config_filter:
+        description: 'Filter configs by name (glob, e.g. "windows-*"). Leave empty to build all.'
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────
+  # Job 1: Discover all JSON configs and emit a matrix
+  # ─────────────────────────────────────────────────────────────────
+  discover:
+    name: Discover build configs
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect JSON configs
+        id: set-matrix
+        shell: bash
+        run: |
+          FILTER="${{ github.event.inputs.config_filter }}"
+          CONFIGS=()
+
+          while IFS= read -r file; do
+            # Validate JSON
+            if ! jq empty "$file" 2>/dev/null; then
+              echo "::warning::Skipping invalid JSON: $file"
+              continue
+            fi
+
+            # Read required fields
+            PLATFORM=$(jq -r '.platform // empty' "$file")
+            TARGET=$(jq -r '.target // empty' "$file")
+
+            # Only support windows and linuxbsd for now
+            if [[ "$PLATFORM" != "windows" && "$PLATFORM" != "linuxbsd" ]]; then
+              echo "::warning::Skipping unsupported platform '$PLATFORM' in $file"
+              continue
+            fi
+
+            CONFIGS+=("$file")
+          done < <(find configs -name "${FILTER:-*}.json" | sort)
+
+          if [ ${#CONFIGS[@]} -eq 0 ]; then
+            echo "::error::No valid build configs found."
+            exit 1
+          fi
+
+          # Build matrix JSON
+          MATRIX=$(jq -n \
+            --argjson configs "$(printf '%s\n' "${CONFIGS[@]}" | jq -R . | jq -s .)" \
+            '{include: ($configs | map({config_file: .}))}')
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Found configs:"
+          echo "$MATRIX" | jq .
+
+  # ─────────────────────────────────────────────────────────────────
+  # Job 2: Build each template
+  # ─────────────────────────────────────────────────────────────────
+  build:
+    name: Build — ${{ matrix.config_file }}
+    needs: discover
+    runs-on: ${{ fromJson('{"windows":"windows-latest","linuxbsd":"ubuntu-latest"}')[fromJson(steps.read-config.outputs.platform || '"linuxbsd"')] }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+
+    # We need the runner OS before we know the platform, so we run on ubuntu
+    # and cross-compile. Windows templates can be built on Linux with mingw.
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────
+      - uses: actions/checkout@v4
+
+      # ── Read config ───────────────────────────────────────────────
+      - name: Read config
+        id: cfg
+        shell: bash
+        run: |
+          FILE="${{ matrix.config_file }}"
+          echo "Reading $FILE"
+
+          GODOT_VERSION=$(jq -r '.godot_version'   "$FILE")
+          TEMPLATE_NAME=$(jq -r '.template_name'   "$FILE")
+          TARGET=$(jq -r        '.target'           "$FILE")
+          BUILD_PROFILE=$(jq -r '.build_profile // ""' "$FILE")
+          OUTPUT_DIR=$(jq -r   '.output_dir'        "$FILE")
+          PLATFORM=$(jq -r     '.platform'          "$FILE")
+          ENCRYPTION_KEY=$(jq -r '.encryption_key // ""' "$FILE")
+          EXTRA_FLAGS=$(jq -r  '.extra_scons_flags // ""' "$FILE")
+
+          # Validate
+          for var in GODOT_VERSION TEMPLATE_NAME TARGET OUTPUT_DIR PLATFORM; do
+            if [ -z "${!var}" ]; then
+              echo "::error::Missing required field '${var,,}' in $FILE"
+              exit 1
+            fi
+          done
+
+          # Detect release vs debug
+          if [[ "$TARGET" == *"release"* ]]; then
+            IS_RELEASE=true
+          else
+            IS_RELEASE=false
+          fi
+
+          echo "godot_version=$GODOT_VERSION"    >> "$GITHUB_OUTPUT"
+          echo "template_name=$TEMPLATE_NAME"    >> "$GITHUB_OUTPUT"
+          echo "target=$TARGET"                  >> "$GITHUB_OUTPUT"
+          echo "build_profile=$BUILD_PROFILE"    >> "$GITHUB_OUTPUT"
+          echo "output_dir=$OUTPUT_DIR"          >> "$GITHUB_OUTPUT"
+          echo "platform=$PLATFORM"             >> "$GITHUB_OUTPUT"
+          echo "encryption_key=$ENCRYPTION_KEY" >> "$GITHUB_OUTPUT"
+          echo "extra_flags=$EXTRA_FLAGS"        >> "$GITHUB_OUTPUT"
+          echo "is_release=$IS_RELEASE"          >> "$GITHUB_OUTPUT"
+
+          # Godot major version (e.g. 4 from "4.4.1-stable")
+          MAJOR=$(echo "$GODOT_VERSION" | cut -d. -f1)
+          echo "godot_major=$MAJOR"             >> "$GITHUB_OUTPUT"
+
+      # ── Install system dependencies ───────────────────────────────
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            scons \
+            pkg-config \
+            libx11-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
+            libglu1-mesa-dev libasound2-dev libpulse-dev libudev-dev \
+            libxi-dev libxrandr-dev \
+            mingw-w64 \
+            strip \
+            upx-ucl \
+            python3 python3-pip \
+            git
+
+      # ── Download & extract Godot source ──────────────────────────
+      - name: Cache Godot source
+        id: cache-source
+        uses: actions/cache@v4
+        with:
+          path: godot-src
+          key: godot-src-${{ steps.cfg.outputs.godot_version }}
+
+      - name: Download Godot source
+        if: steps.cache-source.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          VERSION="${{ steps.cfg.outputs.godot_version }}"
+          # Strip "-stable"/"-beta"/etc suffix for the tag URL
+          TAG="$VERSION"
+          URL="https://github.com/godotengine/godot/archive/refs/tags/${TAG}.tar.gz"
+          echo "Downloading Godot $VERSION from $URL"
+          mkdir -p godot-src
+          curl -fL "$URL" | tar -xz --strip-components=1 -C godot-src
+
+      # ── SCons cache (per config) ──────────────────────────────────
+      - name: Restore SCons cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.scons_cache/${{ steps.cfg.outputs.template_name }}
+          key: scons-${{ steps.cfg.outputs.template_name }}-${{ steps.cfg.outputs.godot_version }}-${{ hashFiles(format('configs/{0}', matrix.config_file), steps.cfg.outputs.build_profile != '' && steps.cfg.outputs.build_profile || 'NOPROFILE') }}
+          restore-keys: |
+            scons-${{ steps.cfg.outputs.template_name }}-${{ steps.cfg.outputs.godot_version }}-
+            scons-${{ steps.cfg.outputs.template_name }}-
+
+      # ── Build ─────────────────────────────────────────────────────
+      - name: Build export template
+        shell: bash
+        env:
+          GODOT_ENCRYPTION_KEY: ${{ steps.cfg.outputs.encryption_key }}
+        run: |
+          set -euo pipefail
+
+          PLATFORM="${{ steps.cfg.outputs.platform }}"
+          TARGET="${{ steps.cfg.outputs.target }}"
+          IS_RELEASE="${{ steps.cfg.outputs.is_release }}"
+          EXTRA_FLAGS="${{ steps.cfg.outputs.extra_flags }}"
+          CACHE_DIR="$HOME/.scons_cache/${{ steps.cfg.outputs.template_name }}"
+
+          mkdir -p "$CACHE_DIR"
+
+          # Base SCons flags
+          SCONS_FLAGS=(
+            platform="$PLATFORM"
+            target="$TARGET"
+            cache_path="$CACHE_DIR"
+            cache_limit=2        # GB
+            progress=no
+          )
+
+          # Build profile — pass absolute path so SCons finds it regardless of cwd
+          BUILD_PROFILE="${{ steps.cfg.outputs.build_profile }}"
+          if [ -n "$BUILD_PROFILE" ]; then
+            PROFILE_ABS="$(realpath "$BUILD_PROFILE" 2>/dev/null || true)"
+            if [ -f "$PROFILE_ABS" ]; then
+              SCONS_FLAGS+=(build_profile="$PROFILE_ABS")
+              echo "Using build profile: $PROFILE_ABS"
+            else
+              echo "::warning::Build profile '$BUILD_PROFILE' not found — skipping."
+            fi
+          fi
+
+          # Encryption
+          if [ -n "$GODOT_ENCRYPTION_KEY" ]; then
+            echo "::add-mask::$GODOT_ENCRYPTION_KEY"
+            SCONS_FLAGS+=(script_aes256_encryption_key="$GODOT_ENCRYPTION_KEY")
+          fi
+
+          # Release-only flags
+          if [ "$IS_RELEASE" = "true" ]; then
+            SCONS_FLAGS+=(lto=full)
+          fi
+
+          # Cross-compile toolchain for Windows
+          if [ "$PLATFORM" = "windows" ]; then
+            SCONS_FLAGS+=(
+              use_mingw=yes
+              mingw_prefix=/usr/bin/x86_64-w64-mingw32-
+            )
+          fi
+
+          # Extra flags from config (split on whitespace)
+          if [ -n "$EXTRA_FLAGS" ]; then
+            read -ra EXTRA_ARRAY <<< "$EXTRA_FLAGS"
+            SCONS_FLAGS+=("${EXTRA_ARRAY[@]}")
+          fi
+
+          echo "Building with flags: ${SCONS_FLAGS[*]}"
+          cd godot-src
+          scons "${SCONS_FLAGS[@]}" -j$(nproc)
+
+      # ── Strip binaries (release only) ────────────────────────────
+      - name: Strip binaries
+        if: steps.cfg.outputs.is_release == 'true'
+        shell: bash
+        run: |
+          PLATFORM="${{ steps.cfg.outputs.platform }}"
+          find godot-src/bin -type f \( -name "*.exe" -o -name "*.so" -o -name "*.dll" -o -perm /111 \) | while read -r bin; do
+            echo "Stripping: $bin"
+            if [ "$PLATFORM" = "windows" ]; then
+              x86_64-w64-mingw32-strip --strip-unneeded "$bin" || strip --strip-unneeded "$bin" || true
+            else
+              strip --strip-unneeded "$bin" || true
+            fi
+          done
+
+      # ── Collect output ────────────────────────────────────────────
+      - name: Collect output files
+        shell: bash
+        run: |
+          OUTPUT_DIR="${{ steps.cfg.outputs.output_dir }}"
+          TEMPLATE_NAME="${{ steps.cfg.outputs.template_name }}"
+          mkdir -p "artifacts/$TEMPLATE_NAME"
+
+          # Copy built binaries
+          cp -r godot-src/bin/. "artifacts/$TEMPLATE_NAME/"
+
+          echo "Contents of artifacts/$TEMPLATE_NAME:"
+          ls -lh "artifacts/$TEMPLATE_NAME/"
+
+      # ── Upload artifact ───────────────────────────────────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.cfg.outputs.template_name }}
+          path: artifacts/${{ steps.cfg.outputs.template_name }}/
+          retention-days: 30
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────
+  # Job 3: Optional — create a GitHub Release on tags
+  # ─────────────────────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts/
+
+      - name: Zip each template
+        shell: bash
+        run: |
+          cd release-artifacts
+          for dir in */; do
+            name="${dir%/}"
+            zip -r "${name}.zip" "$dir"
+            echo "Packed: ${name}.zip"
+          done
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/*.zip
+          generate_release_notes: true

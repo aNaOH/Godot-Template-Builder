@@ -1,0 +1,7 @@
+{
+  "godot_version": "4.6-stable",
+  "template_name": "windows-release",
+  "target": "template_release",
+  "output_dir": "dist/windows",
+  "platform": "windows"
+}
