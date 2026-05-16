@@ -64,14 +64,14 @@ jobs:
             exit 1
           fi
 
-          # Build matrix JSON
-          MATRIX=$(jq -n \
-            --argjson configs "$(printf '%s\n' "${CONFIGS[@]}" | jq -R . | jq -s .)" \
-            '{include: ($configs | map({config_file: .}))}')
+          # Build matrix JSON — compact single line avoids GITHUB_OUTPUT multiline issues
+          MATRIX=$(printf '%s\n' "${CONFIGS[@]}" | jq -R . | jq -sc '{include: map({config_file: .})}')
 
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "Found configs:"
           echo "$MATRIX" | jq .
+
+          # Use heredoc syntax to safely write JSON to GITHUB_OUTPUT
+          printf 'matrix<<EOF\n%s\nEOF\n' "$MATRIX" >> "$GITHUB_OUTPUT"
 
   # ─────────────────────────────────────────────────────────────────
   # Job 2: Build each template
