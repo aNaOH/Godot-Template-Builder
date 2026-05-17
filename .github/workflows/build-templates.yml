@@ -148,7 +148,6 @@ jobs:
             libglu1-mesa-dev libasound2-dev libpulse-dev libudev-dev \
             libxi-dev libxrandr-dev \
             mingw-w64 \
-            upx-ucl \
             python3 python3-pip \
             git
 
@@ -177,7 +176,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.scons_cache/${{ steps.cfg.outputs.template_name }}
-          key: scons-${{ steps.cfg.outputs.template_name }}-${{ steps.cfg.outputs.godot_version }}-${{ hashFiles(format('configs/{0}', matrix.config_file), steps.cfg.outputs.build_profile != '' && steps.cfg.outputs.build_profile || 'NOPROFILE') }}
+          key: scons-${{ steps.cfg.outputs.template_name }}-${{ steps.cfg.outputs.godot_version }}-${{ hashFiles(matrix.config_file) }}
           restore-keys: |
             scons-${{ steps.cfg.outputs.template_name }}-${{ steps.cfg.outputs.godot_version }}-
             scons-${{ steps.cfg.outputs.template_name }}-
@@ -231,13 +230,12 @@ jobs:
           fi
 
           # Cross-compile toolchain for Windows
+          # Godot's SCons detects MinGW via the MINGW_PREFIX environment variable
           if [ "$PLATFORM" = "windows" ]; then
-            # mingw_prefix is just the tuple prefix; SCons searches PATH for the binaries
             MINGW_BIN=$(dirname "$(command -v x86_64-w64-mingw32-gcc)")
-            SCONS_FLAGS+=(
-              use_mingw=yes
-              mingw_prefix="$MINGW_BIN/x86_64-w64-mingw32-"
-            )
+            export MINGW_PREFIX="$MINGW_BIN/x86_64-w64-mingw32-"
+            echo "MINGW_PREFIX=$MINGW_PREFIX"
+            SCONS_FLAGS+=(use_mingw=yes)
           fi
 
           # Extra flags from config (split on whitespace)
@@ -288,6 +286,9 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+  # ─────────────────────────────────────────────────────────────────
+  # Job 3: Optional — create a GitHub Release on tags
+  # ─────────────────────────────────────────────────────────────────
   release:
     name: Create GitHub Release
     needs: build
