@@ -230,10 +230,13 @@ jobs:
           fi
 
           # Cross-compile toolchain for Windows
-          # Godot's SCons detects MinGW via the MINGW_PREFIX environment variable
+          # Godot requires the posix threading model of MinGW (not the default win32 one).
+          # MINGW_PREFIX must point to the directory that contains bin/, not to the prefix itself.
+          # On Ubuntu, binaries are at /usr/bin/x86_64-w64-mingw32-gcc → MINGW_PREFIX=/usr
           if [ "$PLATFORM" = "windows" ]; then
-            MINGW_BIN=$(dirname "$(command -v x86_64-w64-mingw32-gcc)")
-            export MINGW_PREFIX="$MINGW_BIN/x86_64-w64-mingw32-"
+            sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+            sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+            export MINGW_PREFIX="/usr"
             echo "MINGW_PREFIX=$MINGW_PREFIX"
             SCONS_FLAGS+=(use_mingw=yes)
           fi
