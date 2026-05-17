@@ -2,8 +2,13 @@ name: Deploy Key Generator to GitHub Pages
 
 on:
   push:
-    branches:
-      - main
+    branches: [main, master]
+    paths:
+      - 'keygen/*'
+      - '.github/workflows/key-generator.yml'
+  pull_request:
+    paths:
+      - 'keygen/*'
   workflow_dispatch:
 
 permissions:

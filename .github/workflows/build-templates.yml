@@ -148,6 +148,7 @@ jobs:
             libglu1-mesa-dev libasound2-dev libpulse-dev libudev-dev \
             libxi-dev libxrandr-dev \
             mingw-w64 \
+            strip \
             upx-ucl \
             python3 python3-pip \
             git
@@ -219,10 +220,10 @@ jobs:
             fi
           fi
 
-          # Encryption
+          # Encryption — only added when the key is non-empty
           if [ -n "$GODOT_ENCRYPTION_KEY" ]; then
             echo "::add-mask::$GODOT_ENCRYPTION_KEY"
-            SCONS_FLAGS+=(script_aes256_encryption_key="$GODOT_ENCRYPTION_KEY")
+            SCONS_FLAGS+=("script_aes256_encryption_key=$GODOT_ENCRYPTION_KEY")
           fi
 
           # Release-only flags
@@ -232,9 +233,11 @@ jobs:
 
           # Cross-compile toolchain for Windows
           if [ "$PLATFORM" = "windows" ]; then
+            # mingw_prefix is just the tuple prefix; SCons searches PATH for the binaries
+            MINGW_BIN=$(dirname "$(command -v x86_64-w64-mingw32-gcc)")
             SCONS_FLAGS+=(
               use_mingw=yes
-              mingw_prefix=/usr/bin/x86_64-w64-mingw32-
+              mingw_prefix="$MINGW_BIN/x86_64-w64-mingw32-"
             )
           fi
 
