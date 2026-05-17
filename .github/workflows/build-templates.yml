@@ -105,6 +105,7 @@ jobs:
           PLATFORM=$(jq -r     '.platform'          "$FILE")
           ENCRYPTION_KEY=$(jq -r '.encryption_key // ""' "$FILE")
           EXTRA_FLAGS=$(jq -r  '.extra_scons_flags // ""' "$FILE")
+          D3D12=$(jq -r        '.d3d12 // "true"'          "$FILE")
 
           # Validate
           for var in GODOT_VERSION TEMPLATE_NAME TARGET OUTPUT_DIR PLATFORM; do
@@ -130,6 +131,7 @@ jobs:
           echo "encryption_key=$ENCRYPTION_KEY" >> "$GITHUB_OUTPUT"
           echo "extra_flags=$EXTRA_FLAGS"        >> "$GITHUB_OUTPUT"
           echo "is_release=$IS_RELEASE"          >> "$GITHUB_OUTPUT"
+          echo "d3d12=$D3D12"                    >> "$GITHUB_OUTPUT"
 
           # Godot major version (e.g. 4 from "4.4.1-stable")
           MAJOR=$(echo "$GODOT_VERSION" | cut -d. -f1)
@@ -171,6 +173,14 @@ jobs:
           mkdir -p godot-src
           curl -fL "$URL" | tar -xz --strip-components=1 -C godot-src
 
+      # ── Install Direct3D 12 SDK (Windows only, unless d3d12=false in config) ──
+      - name: Install Direct3D 12 dependencies
+        if: steps.cfg.outputs.platform == 'windows' && steps.cfg.outputs.d3d12 != 'false'
+        shell: bash
+        run: |
+          cd godot-src
+          python misc/scripts/install_d3d12_sdk_windows.py
+
       # ── SCons cache (per config) ──────────────────────────────────
       - name: Restore SCons cache
         uses: actions/cache@v4
@@ -197,6 +207,8 @@ jobs:
 
           mkdir -p "$CACHE_DIR"
 
+          D3D12="${{ steps.cfg.outputs.d3d12 }}"
+
           # Base SCons flags
           SCONS_FLAGS=(
             platform="$PLATFORM"
@@ -205,6 +217,11 @@ jobs:
             cache_limit=2        # GB
             progress=no
           )
+
+          # Direct3D 12 — disabled explicitly when d3d12=false in config
+          if [ "$D3D12" = "false" ]; then
+            SCONS_FLAGS+=(d3d12=no)
+          fi
 
           # Build profile — pass absolute path so SCons finds it regardless of cwd
           BUILD_PROFILE="${{ steps.cfg.outputs.build_profile }}"

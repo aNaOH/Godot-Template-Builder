@@ -78,6 +78,7 @@ The workflow triggers automatically on every push that touches a `configs/**.jso
 | `output_dir` | ✅ | Informational output path. The actual output is always uploaded as a GitHub artifact. |
 | `build_profile` | ❌ | Path (relative to repo root) to a `.gdbuild` profile. Passed to SCons as `build_profile=<absolute path>`. |
 | `encryption_key` | ❌ | AES-256 encryption key. Leave empty to skip. Use `${{ secrets.MY_SECRET }}` syntax to reference a GitHub Secret (see below). |
+| `d3d12` | ❌ | `true` (default) or `false`. When `true`, installs the Direct3D 12 SDK via `misc/scripts/install_d3d12_sdk_windows.py` before compiling and enables D3D12 support. Set to `false` to skip the SDK install and pass `d3d12=no` to SCons (Vulkan and OpenGL remain available). Only relevant for `platform: windows`. |
 | `extra_scons_flags` | ❌ | Additional raw SCons flags appended verbatim, e.g. `"use_lto=no precision=double"`. |
 
 ---
